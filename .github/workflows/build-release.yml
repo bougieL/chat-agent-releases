@@ -1,0 +1,108 @@
+name: build-release
+
+# Builds a tagged release of the private source repo (bougieL/chat-agent-electron)
+# inside this public feed repo and uploads the artifacts to this repo's
+# releases. Public-repo Actions minutes are free/unlimited, so this doubles
+# as the bypass when the account's Actions spending cap blocks the private
+# repo's own release workflow.
+#
+# Source stays private: it is cloned at build time with RELEASES_REPO_TOKEN
+# and never committed or uploaded here. Note Actions logs on a public repo
+# are world-readable — build failures may print source snippets from
+# compiler/bundler errors.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Source tag to build (e.g. v1.12.32)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-24.04]
+
+    steps:
+      - name: Checkout workflow repo
+        uses: actions/checkout@v4
+
+      - name: Clone private source at tag
+        env:
+          TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          git clone --depth 1 --branch "${{ inputs.tag }}" \
+            "https://x-access-token:${TOKEN}@github.com/bougieL/chat-agent-electron.git" source
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+
+      # Build commands mirror release.yml in the private repo; --publish
+      # never is already baked into the build:mac/build:win scripts there.
+      - name: Build (macOS)
+        if: matrix.os == 'macos-latest'
+        working-directory: source
+        run: pnpm run build:mac
+
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: source
+        run: pnpm run build:win
+
+      - name: Build (Linux)
+        if: matrix.os == 'ubuntu-24.04'
+        working-directory: source
+        run: |
+          pnpm run build
+          pnpm exec electron-builder --linux --publish never
+
+      - name: Repack deb
+        if: matrix.os == 'ubuntu-24.04'
+        working-directory: source
+        run: |
+          node scripts/repack-deb.mjs
+          rm -f dist/*.deb.bak
+
+      - name: Upload to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -e
+          TAG_NAME="${{ inputs.tag }}"
+          echo "Uploading ${{ matrix.os }} assets to release $TAG_NAME"
+          gh release create "$TAG_NAME" -R bougieL/chat-agent-releases \
+            --generate-notes --draft=false 2>&1 | tail -5 || true
+          shopt -s nullglob
+          cd source
+          FILES=(
+            dist/*.exe dist/*.zip dist/*.dmg dist/*.AppImage
+            dist/*.snap dist/*.deb dist/*.yml dist/*.blockmap
+          )
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No release artifacts found; skipping upload."
+            exit 0
+          fi
+          echo "Files: ${FILES[*]}"
+          gh release upload -R bougieL/chat-agent-releases "$TAG_NAME" \
+            "${FILES[@]}" --clobber 2>&1 | tail -20
