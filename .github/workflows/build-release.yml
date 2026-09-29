@@ -59,8 +59,10 @@ jobs:
 
       # Import the self-signed "ChatAgent Dev" code-signing cert that
       # scripts/afterPack.js in the source repo signs the mac bundle with
-      # (stable Squirrel.Mac designated-requirement anchor). CSC_LINK is the
-      # base64-encoded .p12; CSC_KEY_PASSWORD unlocks it.
+      # (stable Squirrel.Mac designated-requirement anchor). The .p12 is
+      # checked in at certs/ in the private source repo; the CSC_KEY_PASSWORD
+      # secret here unlocks it. Tags cut before the cert was checked in fall
+      # back to the base64 CSC_LINK secret.
       - name: Import macOS signing cert
         if: matrix.os == 'macos-latest'
         env:
@@ -69,13 +71,15 @@ jobs:
         shell: bash
         run: |
           set -e
-          # BSD mktemp needs the X's at the END of the template — a suffix
-          # like /tmp/build.XXXXXX.keychain-db is taken literally and the
-          # keychain create then collides with the file mktemp just made.
           TMP_DIR=$(mktemp -d)
-          CERT_PATH="$TMP_DIR/cert.p12"
+          CERT_PATH="source/certs/chatagent-dev.p12"
+          if [ ! -s "$CERT_PATH" ]; then
+            echo "cert not in this tag; falling back to CSC_LINK secret"
+            CERT_PATH="$TMP_DIR/cert.p12"
+            echo "$CSC_LINK" | base64 --decode > "$CERT_PATH"
+            trap 'rm -f "$CERT_PATH"' EXIT
+          fi
           KEYCHAIN_PATH="$TMP_DIR/build.keychain-db"
-          echo "$CSC_LINK" | base64 --decode > "$CERT_PATH"
           KEYCHAIN_PASSWORD=$(uuidgen)
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login
@@ -87,7 +91,8 @@ jobs:
           # step fails with a keychain access error).
           security set-key-partition-list -S apple-tool:,apple: \
             -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          rm -rf "$TMP_DIR"
+          # The keychain file in TMP_DIR must survive this step — the later
+          # Build (macOS) step signs with it.
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
       # Build commands mirror release.yml in the private repo; --publish
