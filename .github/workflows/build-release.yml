@@ -69,9 +69,13 @@ jobs:
         shell: bash
         run: |
           set -e
-          CERT_PATH=$(mktemp /tmp/cert.XXXXXX.p12)
+          # BSD mktemp needs the X's at the END of the template — a suffix
+          # like /tmp/build.XXXXXX.keychain-db is taken literally and the
+          # keychain create then collides with the file mktemp just made.
+          TMP_DIR=$(mktemp -d)
+          CERT_PATH="$TMP_DIR/cert.p12"
+          KEYCHAIN_PATH="$TMP_DIR/build.keychain-db"
           echo "$CSC_LINK" | base64 --decode > "$CERT_PATH"
-          KEYCHAIN_PATH=$(mktemp /tmp/build.XXXXXX.keychain-db)
           KEYCHAIN_PASSWORD=$(uuidgen)
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login
@@ -83,7 +87,7 @@ jobs:
           # step fails with a keychain access error).
           security set-key-partition-list -S apple-tool:,apple: \
             -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          rm -f "$CERT_PATH"
+          rm -rf "$TMP_DIR"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
       # Build commands mirror release.yml in the private repo; --publish
