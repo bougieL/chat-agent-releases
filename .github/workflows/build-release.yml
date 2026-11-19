@@ -107,12 +107,38 @@ jobs:
         working-directory: source
         run: pnpm run build:win
 
+      # The rpm target is built by electron-builder's bundled `fpm` (a
+      # self-contained ruby binary), not by rpmbuild — but that ruby links
+      # against libcrypt.so.1 (libcrypt1 on Debian/Ubuntu). libcrypt1 is
+      # present on every Ubuntu image, so the install below is only a
+      # guarantee, not a fix. `rpm` itself is pulled in so the artifact can
+      # be inspected in the same job (see "Verify rpm" below).
+      - name: Install rpm tooling
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rpm libcrypt1
+
+      # Targets are listed explicitly instead of relying on the source
+      # repo's `linux.target` list: AppImage + deb are what that config
+      # builds today, and rpm is added here so the source repo's default
+      # `pnpm run build:linux` stays unchanged for local dev.
       - name: Build (Linux)
         if: matrix.os == 'ubuntu-24.04'
         working-directory: source
         run: |
           pnpm run build
-          pnpm exec electron-builder --linux --publish never
+          pnpm exec electron-builder --linux AppImage deb rpm --publish never
+
+      - name: Verify rpm
+        if: matrix.os == 'ubuntu-24.04'
+        working-directory: source
+        run: |
+          set -e
+          RPM_FILE=$(ls dist/*.rpm)
+          echo "Built: $RPM_FILE"
+          rpm -qip "$RPM_FILE"
 
       - name: Repack deb
         if: matrix.os == 'ubuntu-24.04'
@@ -135,7 +161,7 @@ jobs:
           cd source
           FILES=(
             dist/*.exe dist/*.zip dist/*.dmg dist/*.AppImage
-            dist/*.snap dist/*.deb dist/*.yml dist/*.blockmap
+            dist/*.snap dist/*.deb dist/*.rpm dist/*.yml dist/*.blockmap
           )
           if [ ${#FILES[@]} -eq 0 ]; then
             echo "No release artifacts found; skipping upload."
